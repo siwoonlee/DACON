@@ -11,16 +11,12 @@ from pytorch_lightning.callbacks.stochastic_weight_avg import (
     StochasticWeightAveraging,
 )
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.plugins import DDPPlugin
 
 from config import Config
-from datasets.dataset import get_dataloader, save_train_val_test_data
-from experiment import Experiment, Experiment2
-from laboratory.transaction_classification.constants import (
-    CHILD_LABEL_NUM,
-    PARENT_LABEL_NUM,
-)
-from models.model import load_model_from_config, transfer_weights
-from pytorch_lightning.plugins import DDPPlugin
+from sentence_classification.datasets.dataset import get_dataloader, split_dataset_equal_category_balance
+from sentence_classification.experiment import Experiment
+from sentence_classification.models.model import load_model_from_config, transfer_weights
 
 
 def create_directories(config):
@@ -33,9 +29,7 @@ def create_directories(config):
         exist_ok=True,
     )
     os.makedirs(config.experiment_config.path_to_logs, exist_ok=True)
-    os.makedirs(config.experiment_config.path_to_leaderboard, exist_ok=True)
     os.makedirs(config.trainer_config.path_to_model, exist_ok=True)
-    os.makedirs("/home/dataset", exist_ok=True)
 
 
 def main():
@@ -53,37 +47,27 @@ def main():
         ),
     )
     logger.info("Copied config file!")
-    if not config.experiment_config.load_data_from_disk:
-        save_train_val_test_data(config)
+    df = pd.read_csv(os.path.join(config.experiment_config.dataset_dir, "train.csv"))
+    train_dataset_df, val_dataset_df = split_dataset_equal_category_balance(df, test_ratio=0.2)
 
     train_dl = get_dataloader(
         stage='train',
-        dataset_dir=config.experiment_config.dataset_dir,
-        is_production_mode=config.experiment_config.is_production_mode,
-        transaction_type=config.experiment_config.transaction_type,
-        mmap_mode=config.experiment_config.mmap_mode,
-        dt=config.experiment_config.dt,
+        dataset_df=train_dataset_df,
         max_char_length=config.model_config.seq_len,
         batch_size=config.experiment_config.batch_size,
         sampling_method=config.experiment_config.sampling_method,
-        is_multi_input=config.experiment_config.multi_input,
         num_workers=config.experiment_config.num_workers,
         apply_data_augmentation=config.experiment_config.apply_data_augmentation,
     )
     logger.info("Loaded train dataloader")
     val_dl = get_dataloader(
-        stage='validation',
-        dataset_dir=config.experiment_config.dataset_dir,
-        is_production_mode=config.experiment_config.is_production_mode,
-        transaction_type=config.experiment_config.transaction_type,
-        mmap_mode=config.experiment_config.mmap_mode,
-        dt=config.experiment_config.dt,
+        stage='val',
+        dataset_df=val_dataset_df,
         max_char_length=config.model_config.seq_len,
         batch_size=config.experiment_config.batch_size,
-        sampling_method='normal',
-        is_multi_input=config.experiment_config.multi_input,
+        sampling_method=config.experiment_config.sampling_method,
         num_workers=config.experiment_config.num_workers,
-        apply_data_augmentation=False
+        apply_data_augmentation=config.experiment_config.apply_data_augmentation,
     )
     logger.info("Loaded validation dataloader")
 
@@ -97,22 +81,17 @@ def main():
         )
         logger.info("weight transfer success!")
     logger.info("Model Loaded")
-    exp_cls = (
-        Experiment2 if config.experiment_config.multi_input else Experiment
-    )
-    expt = exp_cls(
+
+    expt = Experiment(
         model=model,
-        num_child_class=CHILD_LABEL_NUM,
-        num_parent_class=PARENT_LABEL_NUM,
         exp_config=config.experiment_config,
         train_dl=train_dl,
+        is_inference=False,
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
     early_stop_callback = EarlyStopping(
-        monitor="val/loss"
-        if config.experiment_config.is_pretraining
-        else "val/child_loss",
+        monitor="val/loss",
         min_delta=0.00,
         patience=config.experiment_config.early_stop_patience,
         verbose=False,
@@ -121,7 +100,7 @@ def main():
     checkpoint_callback = ModelCheckpoint(
         monitor="val/loss"
         if config.experiment_config.is_pretraining
-        else "val/child_balanced_accuracy",
+        else "val/weighted_f1_score",
         mode="min" if config.experiment_config.is_pretraining else "max",
         dirpath=config.trainer_config.path_to_model,
         save_top_k=1,
@@ -155,29 +134,9 @@ def main():
         callbacks=callbacks,
         log_every_n_steps=config.trainer_config.log_cycle,
         val_check_interval=config.trainer_config.val_check_interval,
-        accelerator=None if config.trainer_config.num_gpus == 1 else 'ddp',
-        plugins=DDPPlugin(find_unused_parameters=False),
-        replace_sampler_ddp=False,
     )
 
     trainer.fit(expt, train_dl, val_dl)
-
-    test_dl = get_dataloader(
-        stage='test',
-        dataset_dir=config.experiment_config.dataset_dir,
-        is_production_mode=config.experiment_config.is_production_mode,
-        transaction_type=config.experiment_config.transaction_type,
-        mmap_mode=config.experiment_config.mmap_mode,
-        dt=config.experiment_config.dt,
-        max_char_length=config.model_config.seq_len,
-        batch_size=config.experiment_config.batch_size,
-        sampling_method='normal',
-        is_multi_input=config.experiment_config.multi_input,
-        num_workers=config.experiment_config.num_workers,
-        apply_data_augmentation=False,
-    )
-    trainer.val_check_interval = 1
-    trainer.test(ckpt_path="best", dataloaders=test_dl)
 
 
 if __name__ == "__main__":

@@ -6,16 +6,12 @@ from typing import List
 
 from pydantic import BaseModel
 
-from laboratory.transaction_classification.constants import (
-    CHILD_LABEL_NUM,
-    PARENT_LABEL_NUM,
-)
+from sentence_classification.constants import MAX_CHARACTER_VECTOR_LENGTH, OOV_INDEX, full_name_label_to_num_map
 
 now_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-transaction_type = 'card'  # bankaccount, card, payment, prepayment
 path_to_result = (
-    f"/home/{transaction_type}_experiment_result"
-)  # "/home" #  "/home/ubuntu/swlee"
+    f"./experiment_result"
+)
 
 
 @dataclass
@@ -75,47 +71,19 @@ class mWDNPlusConfig:
 
 
 @dataclass
-class TSiTConfig:
-    pass
-
-
-@dataclass
-class TSPerceiverConfig:
-    pass
-
-
-@dataclass
-class TextCNNConfig:
-    path_to_model_config: str = (
-        '../legacy/bank_account_category_classification/config.yaml'
-    )
-
-
-@dataclass
 class ModelConfig:
-    model_name: str = 'TSTPlus'  # 'TextCNN', 'Inception', 'TST', 'TSTPlus', 'LSTM_FCN', 'LSTM', 'GRU', 'mWDNPlus', 'TSiT', 'TSPerceiver'
+    model_name: str = 'TSTPlus'  # 'Inception', 'TST', 'TSTPlus', 'LSTM_FCN', 'LSTM', 'GRU', 'mWDNPlus', 'TSiT', 'TSPerceiver'
     c_in: int = 128
     mid_c_out: int = 32
-    c_out: int = CHILD_LABEL_NUM
-    seq_len: int = 75
-    n_vocabs: int = 247
+    c_out: int = len(full_name_label_to_num_map)
+    seq_len: int = MAX_CHARACTER_VECTOR_LENGTH
+    n_vocabs: int = OOV_INDEX + 1
     inception_config: object = InceptionConfig()
     tst_config: object = TSTConfig()
     lstm_fcn_config: object = LSTM_FCNConfig()
     lstm_config: object = LSTMConfig()
     gru_config: object = GRUConfig()
     wWDNPlus_config: object = mWDNPlusConfig()
-    tsit_config: object = TSiTConfig()
-    ts_perceiver_config: object = TSPerceiverConfig()
-    textcnn_config = TextCNNConfig()
-
-
-@dataclass
-class TabularModelConfig:
-    model_name: str = 'Simple'  # Simple, TabNet, TabTransformer,
-    c_in: int = 18
-    mid_c_out: int = 16
-    c_out: int = CHILD_LABEL_NUM
 
 
 @dataclass
@@ -128,7 +96,7 @@ class TrainerConfig:
     num_gpus: int = 1
     grad_clip: float = 0.5
     use_swa: bool = True
-    log_cycle: int = 1000
+    log_cycle: int = 100
     mixed_precision: bool = False
     auto_lr_find: bool = False
     val_check_interval: float = 1.0
@@ -138,49 +106,33 @@ class TrainerConfig:
 class ExperimentConfig:
     path_to_result: str = path_to_result
     path_to_logs: str = os.path.join(path_to_result, 'logs')
-    experiment_name = 'tst_multi_loss_multi_input_simple_ensemble_simple_self_supervised_AdamW'  # 'tst_multi_loss_multi_input_simple_ensemble_simple_with_card_dataset_only_expense'
-    transaction_type: str = transaction_type
-    path_to_leaderboard: str = (
-        f'{path_to_result}/{transaction_type}_leaderboard'
-    )
-    use_implicit_parent_category: bool = True
+    experiment_name = 'tst_pretraining'
     max_epochs: int = 125
-    batch_size: int = 1024
+    batch_size: int = 32
     lr: float = 1e-4
     max_lr: float = 1e-4
     smoothing_factor: float = 0.1
     optimizer: str = 'AdamW'  # 'RAdam', 'AdamW'
     use_weighted_sampling: bool = False
-    sampling_method: str = 'gold_standard_weighted'  # 'normal', 'weighted'
+    sampling_method: str = 'normal'  # 'normal', 'weighted'
     loss: str = 'CE'  # 'CE', 'weightedCE', 'Focal'
     lr_sched: str = None  # None or 'one_cycle' or 'step' or 'cosine_anneal'
     cos_min_lr: float = 1e-7
     cos_max_lr: float = 1e-2
     focal_gamma: float = 2
-    focal_alpha: List = None  # None, field(default_factory=lambda: [0.1, 0.5, 0.4])   # 0 - background, 1,2 - foreground
-    early_stop_patience: int = 50  # max_epochs * 2 // 4
-    multi_input: bool = True
-    multi_input_model: str = 'custom'  # None, 'tsai', 'custom'
-    use_child_parent_loss: bool = True
-    ensemble_method: str = 'simple'  # 'simple', 'tabnet'
-    dataset_dir: str = '/home/dataset'
-    is_pretraining: bool = False
-    load_pretrained_model: bool = True
-    pretrained_model_path: str = "/home/electronic_payment_experiment_result/model_weights/20220914_094343/model_epoch=34_step=    289940.ckpt"
-    is_production_mode: bool = True
-    concat_cross_domain_dataset: bool = True
+    focal_alpha: List = None
+    early_stop_patience: int = 50
+    dataset_dir: str = './data'
+    is_pretraining: bool = True
+    load_pretrained_model: bool = False
+    pretrained_model_path: str = ""
     apply_data_augmentation: bool = True
-    process_onehot: bool = True
-    dt: str = '2022-10-24'  # dt=(datetime.datetime.now() - datetime.timedelta(days=3)).strftime('%Y-%m-%d')
-    num_workers: int = 32
-    mmap_mode: str = 'r'
-    load_data_from_disk: bool = False
+    num_workers: int = 0
 
 
 @dataclass
 class Config:
     model_config: object = ModelConfig()
-    tabular_model_config: object = TabularModelConfig()
     trainer_config: object = TrainerConfig()
     experiment_config: object = ExperimentConfig()
     config_path: str = Path(__file__).absolute()

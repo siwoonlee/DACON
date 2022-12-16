@@ -1,58 +1,19 @@
-"""
-This code is from transaction-classifier repository
-https://github.com/banksalad/transaction-classifier/blob/master/classifier/domain/usecases/vectorizer.py
-"""
-
 from typing import List, Tuple
-
-ASCII_LENGTH: int = 128
-
-START_POINT_OF_HANGUL: int = ord('가')
-END_POINT_OF_HANGUL: int = ord('힣')
-START_POINT_OF_JAMO: int = ord('ㄱ')
-END_POINT_OF_JAMO: int = ord('ㅣ')
-
-CHOSEONG: str = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
-JUNGSEONG: str = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ"
-JONGSEONG: List[str] = [
-    '',
-    'ㄱ',
-    'ㄲ',
-    'ㄱㅅ',
-    'ㄴ',
-    'ㄴㅈ',
-    'ㄴㅎ',
-    'ㄷ',
-    'ㄹ',
-    'ㄹㄱ',
-    'ㄹㅁ',
-    'ㄹㅂ',
-    'ㄹㅅ',
-    'ㄹㅌ',
-    'ㄹㅍ',
-    'ㄹㅎ',
-    'ㅁ',
-    'ㅂ',
-    'ㅂㅅ',
-    'ㅅ',
-    'ㅆ',
-    'ㅇ',
-    'ㅈ',
-    'ㅊ',
-    'ㅋ',
-    'ㅌ',
-    'ㅍ',
-    'ㅎ',
-]
-
-LEN_CHOSEONG: int = len(CHOSEONG)
-LEN_JUNGSEONG: int = len(JUNGSEONG)
-LEN_JONGSEONG: int = len(JONGSEONG)
-HANGUL_LENGTH: int = LEN_CHOSEONG + LEN_JUNGSEONG + LEN_JONGSEONG
-
-OOV_INDEX: int = 246
-MAX_CHARACTER_VECTOR_LENGTH: int = 75
-BANK_ACCOUNT_MAX_CHARACTER_VECTOR_LENGTH: int = 30
+from sentence_classification.constants import (
+    MAX_CHARACTER_VECTOR_LENGTH,
+    ASCII_LENGTH,
+    START_POINT_OF_HANGUL,
+    END_POINT_OF_HANGUL,
+    START_POINT_OF_JAMO,
+    END_POINT_OF_JAMO,
+    CHOSEONG,
+    JUNGSEONG,
+    LEN_CHOSEONG,
+    LEN_JUNGSEONG,
+    LEN_JONGSEONG,
+    HANGUL_LENGTH,
+    OOV_INDEX
+)
 
 
 def get_vector_to_classify_category(

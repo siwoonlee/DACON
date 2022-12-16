@@ -1,0 +1,12 @@
+tsai==0.3.1
+pandas==1.3.4
+scikit-learn==1.0.1
+pytorch-lightning==1.6.4
+torch_optimizer
+parmap
+tensorboard==2.9.1
+ipython
+loguru
+ipython
+pyarrow
+setuptools==58.0.4

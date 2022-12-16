@@ -1,37 +1,29 @@
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
-import seaborn as sn
 import torch
 import torch_optimizer as torch_optim
-from cosine_annealing_warmup import CosineAnnealingWarmupRestarts
 from torch import nn
+from sklearn import metrics
 
-from laboratory.evaluation.custom_eval import (
-    get_model_eval_metric_values,
-    get_multiclass_eval_dict,
-    merge_child_parent_result,
-    update_leaderboard,
-)
-from laboratory.transaction_classification.utils.create_mask import (
+from sentence_classification.utils.create_mask import (
     create_masked_titles,
 )
-from laboratory.transaction_classification.utils.focal_loss import FocalLoss
-from laboratory.transaction_classification.utils.label_smoothing_loss import (
+from sentence_classification.utils.focal_loss import FocalLoss
+from sentence_classification.utils.label_smoothing_loss import (
     LabelSmoothingLoss,
 )
-from laboratory.transaction_classification.utils.normalization import (
+from sentence_classification.utils.normalization import (
     min_max_norm_title_vec,
 )
+from sentence_classification.utils.cosine_annealing_with_restarts import CosineAnnealingWarmupRestarts
+from sentence_classification.constants import full_name_label_to_num_map
 
 
 class Experiment(pl.LightningModule):
     def __init__(
         self,
         model,
-        num_child_class,
-        num_parent_class,
         exp_config,
         train_dl,
         is_inference=False,
@@ -41,21 +33,11 @@ class Experiment(pl.LightningModule):
         if is_inference:
             return
         self.experiment_name = exp_config.experiment_name
-        self.use_implicit_parent_category = (
-            exp_config.use_implicit_parent_category
-        )
-        self.path_to_leaderboard = (
-            f"{exp_config.path_to_leaderboard}/leaderboard.pkl"
-        )
         self.optimizer = exp_config.optimizer
         self.softmax = nn.Softmax(dim=1)
         self.epoch_steps = train_dl.__len__()
         self.max_epochs = exp_config.max_epochs
         self.lr_sched = exp_config.lr_sched
-        self.num_child_class = num_child_class
-        self.num_parent_class = num_parent_class
-        self.default_category_df = train_dl.dataset.default_category_df
-        self.use_child_parent_loss = exp_config.use_child_parent_loss
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         if self.lr_sched == 'cosine_anneal':
             self.learning_rate = exp_config.cos_min_lr
@@ -74,7 +56,7 @@ class Experiment(pl.LightningModule):
         else:
             cls_weight = None
         self.loss = LabelSmoothingLoss(
-            classes=num_child_class,
+            classes=len(full_name_label_to_num_map),
             smoothing=exp_config.smoothing_factor,
             weight=cls_weight,
         )
@@ -161,49 +143,14 @@ class Experiment(pl.LightningModule):
             return optimizer
         return [optimizer], [lr_scheduler]
 
-    def get_confusion_mat_img(self, confusion_mat, to_CWH=True):
-        df_cm = pd.DataFrame(
-            confusion_mat,
-            index=[i for i in range(self.num_child_classes)],
-            columns=[i for i in range(self.num_child_classes)],
-        )
-        fig, ax = plt.subplots(figsize=(10, 10), dpi=70)
-        sn.heatmap(df_cm, annot=True, fmt='d')
-        plt.xlabel("Prediction")
-        plt.ylabel("Ground Truth")
-        fig.canvas.draw()
-        image_from_plot = np.frombuffer(
-            fig.canvas.tostring_rgb(), dtype=np.uint8
-        )
-        image_from_plot = image_from_plot.reshape(
-            fig.canvas.get_width_height()[::-1] + (3,)
-        )
-        if to_CWH:
-            image_from_plot = np.swapaxes(image_from_plot, 2, 0)
-            image_from_plot = np.swapaxes(image_from_plot, 2, 1)
-        return image_from_plot
-
-    def make_implicit_parent_category_predictions(self, child_logits):
-        parent_logits = []
-        for parent_label in range(
-            0, self.default_category_df['parent_label'].max() + 1
-        ):
-            target_child_idxs = self.default_category_df['child_label'][
-                self.default_category_df['parent_label'] == parent_label
-            ]
-            parent_logits.append(
-                torch.sum(
-                    child_logits[:, target_child_idxs.values], axis=1
-                ).unsqueeze(dim=1)
-            )
-        parent_logits = torch.cat(parent_logits, axis=1)
-        return parent_logits
-
     def training_step(self, batch, batch_idx):
-        x, child_y, parent_y = (
+        x, 유형_labels, 극성_labels, 시제_labels, 확실성_labels, final_labels = (
             batch['inputs'],
-            batch['child_labels'],
-            batch['parent_labels'],
+            batch['유형_labels'],
+            batch['극성_labels'],
+            batch['시제_labels'],
+            batch['확실성_labels'],
+            batch['final_labels'],
         )
         if self.is_pretraining:
             mask = create_masked_titles(x)
@@ -215,38 +162,42 @@ class Experiment(pl.LightningModule):
             )
             _metrics = {'loss': loss, 'train_loss_step': loss.item()}
             return _metrics
-        if self.use_implicit_parent_category:
-            child_logits = self.model(x)
-            parent_logits = self.make_implicit_parent_category_predictions(
-                child_logits
-            )
-        else:
-            child_logits, parent_logits = self.model(x)
-        child_loss = self.loss(child_logits, child_y)
-        parent_loss = self.loss(parent_logits, parent_y)
-        _, child_y_preds = torch.max(child_logits, 1)
-        _, parent_y_preds = torch.max(parent_logits, 1)
-        loss = (
-            child_loss + parent_loss
-            if self.use_child_parent_loss
-            else child_loss
-        )
+        out_total, out_유형, out_극성, out_시제, out_확실성 = self.model(x)
+        total_loss = self.loss(out_total, final_labels)
+        유형_loss = self.loss(out_유형, 유형_labels)
+        극성_loss = self.loss(out_극성, 극성_labels)
+        시제_loss = self.loss(out_시제, 시제_labels)
+        확실성_loss = self.loss(out_확실성, 확실성_labels)
+        _, total_y_preds = torch.max(out_total, 1)
+        _, 유형_y_preds = torch.max(out_유형, 1)
+        _, 극성_y_preds = torch.max(out_극성, 1)
+        _, 시제_y_preds = torch.max(out_시제, 1)
+        _, 확실성_y_preds = torch.max(out_확실성, 1)
+        loss = total_loss + 유형_loss + 극성_loss + 시제_loss + 확실성_loss
         _metrics = {
             'loss': loss,
-            'train_child_loss_step': child_loss.item(),
-            'train_parent_loss_step': parent_loss.item(),
-            'train_child_y_gts': child_y.cpu().detach().numpy(),
-            'train_parent_y_gts': parent_y.cpu().detach().numpy(),
-            'train_child_y_preds': child_y_preds.cpu().detach().numpy(),
-            'train_parent_y_preds': parent_y_preds.cpu().detach().numpy(),
+            'train_total_loss_step': total_loss.item(),
+            'train_final_labels': final_labels.cpu().detach().numpy(),
+            'train_유형_labels': 유형_labels.cpu().detach().numpy(),
+            'train_극성_labels': 극성_labels.cpu().detach().numpy(),
+            'train_시제_labels': 시제_labels.cpu().detach().numpy(),
+            'train_확실성_labels': 확실성_labels.cpu().detach().numpy(),
+            'train_total_y_preds': total_y_preds.cpu().detach().numpy(),
+            'train_유형_y_preds': 유형_y_preds.cpu().detach().numpy(),
+            'train_극성_y_preds': 극성_y_preds.cpu().detach().numpy(),
+            'train_시제_y_preds': 시제_y_preds.cpu().detach().numpy(),
+            'train_확실성_y_preds': 확실성_y_preds.cpu().detach().numpy(),
         }
         return _metrics
 
     def validation_step(self, val_batch, batch_idx):
-        x, child_y, parent_y = (
+        x, 유형_labels, 극성_labels, 시제_labels, 확실성_labels, final_labels = (
             val_batch['inputs'],
-            val_batch['child_labels'],
-            val_batch['parent_labels'],
+            val_batch['유형_labels'],
+            val_batch['극성_labels'],
+            val_batch['시제_labels'],
+            val_batch['확실성_labels'],
+            val_batch['final_labels'],
         )
         if self.is_pretraining:
             mask = create_masked_titles(x)
@@ -258,38 +209,41 @@ class Experiment(pl.LightningModule):
             )
             _metrics = {'loss': loss, 'val_loss_step': loss.item()}
             return _metrics
-        if self.use_implicit_parent_category:
-            child_logits = self.model(x)
-            parent_logits = self.make_implicit_parent_category_predictions(
-                child_logits
-            )
-        else:
-            child_logits, parent_logits = self.model(x)
-        child_loss = self.loss(child_logits, child_y)
-        parent_loss = self.loss(parent_logits, parent_y)
-        _, child_y_preds = torch.max(child_logits, 1)
-        _, parent_y_preds = torch.max(parent_logits, 1)
-        loss = (
-            child_loss + parent_loss
-            if self.use_child_parent_loss
-            else child_loss
-        )
+        out_total, out_유형, out_극성, out_시제, out_확실성 = self.model(x)
+        total_loss = self.loss(out_total, final_labels)
+        유형_loss = self.loss(out_유형, 유형_labels)
+        극성_loss = self.loss(out_극성, 극성_labels)
+        시제_loss = self.loss(out_시제, 시제_labels)
+        확실성_loss = self.loss(out_확실성, 확실성_labels)
+        _, total_y_preds = torch.max(out_total, 1)
+        _, 유형_y_preds = torch.max(out_유형, 1)
+        _, 극성_y_preds = torch.max(out_극성, 1)
+        _, 시제_y_preds = torch.max(out_시제, 1)
+        _, 확실성_y_preds = torch.max(out_확실성, 1)
+        loss = total_loss + 유형_loss + 극성_loss + 시제_loss + 확실성_loss
         _metrics = {
-            'loss': loss,
-            'val_child_loss_step': child_loss.item(),
-            'val_parent_loss_step': parent_loss.item(),
-            'val_child_y_gts': child_y.cpu().detach().numpy(),
-            'val_parent_y_gts': parent_y.cpu().detach().numpy(),
-            'val_child_y_preds': child_y_preds.cpu().detach().numpy(),
-            'val_parent_y_preds': parent_y_preds.cpu().detach().numpy(),
+            'val_total_loss_step': total_loss.item(),
+            'val_final_labels': final_labels.cpu().detach().numpy(),
+            'val_유형_labels': 유형_labels.cpu().detach().numpy(),
+            'val_극성_labels': 극성_labels.cpu().detach().numpy(),
+            'val_시제_labels': 시제_labels.cpu().detach().numpy(),
+            'val_확실성_labels': 확실성_labels.cpu().detach().numpy(),
+            'val_total_y_preds': total_y_preds.cpu().detach().numpy(),
+            'val_유형_y_preds': 유형_y_preds.cpu().detach().numpy(),
+            'val_극성_y_preds': 극성_y_preds.cpu().detach().numpy(),
+            'val_시제_y_preds': 시제_y_preds.cpu().detach().numpy(),
+            'val_확실성_y_preds': 확실성_y_preds.cpu().detach().numpy(),
         }
         return _metrics
 
     def test_step(self, test_batch, batch_idx):
-        x, child_y, parent_y = (
+        x, 유형_labels, 극성_labels, 시제_labels, 확실성_labels, final_labels = (
             test_batch['inputs'],
-            test_batch['child_labels'],
-            test_batch['parent_labels'],
+            test_batch['유형_labels'],
+            test_batch['극성_labels'],
+            test_batch['시제_labels'],
+            test_batch['확실성_labels'],
+            test_batch['final_labels'],
         )
         if self.is_pretraining:
             mask = create_masked_titles(x)
@@ -301,30 +255,30 @@ class Experiment(pl.LightningModule):
             )
             _metrics = {'loss': loss, 'test_loss_step': loss.item()}
             return _metrics
-        if self.use_implicit_parent_category:
-            child_logits = self.model(x)
-            parent_logits = self.make_implicit_parent_category_predictions(
-                child_logits
-            )
-        else:
-            child_logits, parent_logits = self.model(x)
-        child_loss = self.loss(child_logits, child_y)
-        parent_loss = self.loss(parent_logits, parent_y)
-        _, child_y_preds = torch.max(child_logits, 1)
-        _, parent_y_preds = torch.max(parent_logits, 1)
-        loss = (
-            child_loss + parent_loss
-            if self.use_child_parent_loss
-            else child_loss
-        )
+        out_total, out_유형, out_극성, out_시제, out_확실성 = self.model(x)
+        total_loss = self.loss(out_total, final_labels)
+        유형_loss = self.loss(out_유형, 유형_labels)
+        극성_loss = self.loss(out_극성, 극성_labels)
+        시제_loss = self.loss(out_시제, 시제_labels)
+        확실성_loss = self.loss(out_확실성, 확실성_labels)
+        _, total_y_preds = torch.max(out_total, 1)
+        _, 유형_y_preds = torch.max(out_유형, 1)
+        _, 극성_y_preds = torch.max(out_극성, 1)
+        _, 시제_y_preds = torch.max(out_시제, 1)
+        _, 확실성_y_preds = torch.max(out_확실성, 1)
+        loss = total_loss + 유형_loss + 극성_loss + 시제_loss + 확실성_loss
         _metrics = {
-            'loss': loss,
-            'test_child_loss_step': child_loss.item(),
-            'test_parent_loss_step': parent_loss.item(),
-            'test_child_y_gts': child_y.cpu().detach().numpy(),
-            'test_parent_y_gts': parent_y.cpu().detach().numpy(),
-            'test_child_y_preds': child_y_preds.cpu().detach().numpy(),
-            'test_parent_y_preds': parent_y_preds.cpu().detach().numpy(),
+            'test_total_loss_step': total_loss.item(),
+            'test_final_labels': final_labels.cpu().detach().numpy(),
+            'test_유형_labels': 유형_labels.cpu().detach().numpy(),
+            'test_극성_labels': 극성_labels.cpu().detach().numpy(),
+            'test_시제_labels': 시제_labels.cpu().detach().numpy(),
+            'test_확실성_labels': 확실성_labels.cpu().detach().numpy(),
+            'test_total_y_preds': total_y_preds.cpu().detach().numpy(),
+            'test_유형_y_preds': 유형_y_preds.cpu().detach().numpy(),
+            'test_극성_y_preds': 극성_y_preds.cpu().detach().numpy(),
+            'test_시제_y_preds': 시제_y_preds.cpu().detach().numpy(),
+            'test_확실성_y_preds': 확실성_y_preds.cpu().detach().numpy(),
         }
         return _metrics
 
@@ -339,59 +293,23 @@ class Experiment(pl.LightningModule):
             metrics = dict({f'{stage}/loss': avg_loss})
             self.log_dict(metrics, rank_zero_only=True)
             return
-        child_loss_steps = []
-        parent_loss_steps = []
-        child_y_gts = []
-        parent_y_gts = []
-        child_y_preds = []
-        parent_y_preds = []
+        total_loss_steps = []
+        final_labels = []
+        total_y_preds = []
         for output in outputs:
-            child_loss_steps.append(output[f'{stage}_child_loss_step'])
-            parent_loss_steps.append(output[f'{stage}_parent_loss_step'])
-            child_y_gts.append(output[f'{stage}_child_y_gts'])
-            parent_y_gts.append(output[f'{stage}_parent_y_gts'])
-            child_y_preds.append(output[f'{stage}_child_y_preds'])
-            parent_y_preds.append(output[f'{stage}_parent_y_preds'])
-        child_avg_loss = np.mean(child_loss_steps)
-        parent_avg_loss = np.mean(parent_loss_steps)
-        child_y_gts = np.concatenate(child_y_gts)
-        parent_y_gts = np.concatenate(parent_y_gts)
-        child_y_preds = np.concatenate(child_y_preds)
-        parent_y_preds = np.concatenate(parent_y_preds)
-        child_eval_result = get_multiclass_eval_dict(
-            self.num_child_class, child_y_gts, child_y_preds
-        )
-        parent_eval_result = get_multiclass_eval_dict(
-            self.num_parent_class, parent_y_gts, parent_y_preds
-        )
-        overall_eval_result = merge_child_parent_result(
-            child_eval_result, parent_eval_result
-        )
-        metrics = dict(
-            {f'{stage}/{key}': val for key, val in overall_eval_result.items()}
-        )
-        metrics[f'{stage}/child_loss'] = child_avg_loss
-        metrics[f'{stage}/parent_loss'] = parent_avg_loss
-        if stage == 'test':
-            model_eval_res_df = get_model_eval_metric_values(
-                self.experiment_name,
-                self.num_child_class,
-                self.num_parent_class,
-                child_y_gts,
-                child_y_preds,
-                parent_y_gts,
-                parent_y_preds,
-            )
-            try:
-                leaderboard = pd.read_pickle(self.path_to_leaderboard)
-            except:
-                leaderboard = pd.DataFrame(
-                    data=[[0 for _ in model_eval_res_df.columns]],
-                    columns=model_eval_res_df.columns,
-                    index=["Dummy Model"],
-                )
-            leaderboard = update_leaderboard(model_eval_res_df, leaderboard)
-            leaderboard.to_pickle(self.path_to_leaderboard)
+            total_loss_steps.append(output[f'{stage}total_loss_steps'])
+            final_labels.append(output[f'{stage}_final_labels'])
+            total_y_preds.append(output[f'{stage}_total_y_preds'])
+        total_avg_loss = np.mean(total_loss_steps)
+        final_labels = np.concatenate(final_labels)
+        total_y_preds = np.concatenate(total_y_preds)
+        f1 = metrics.f1_score(final_labels, total_y_preds, average='weighted')
+        b_acc = metrics.balanced_accuracy_score(final_labels, total_y_preds)
+        acc = metrics.accuracy_score(final_labels, total_y_preds)
+        metrics[f'{stage}/loss'] = total_avg_loss
+        metrics[f'{stage}/weighted_f1_score'] = f1
+        metrics[f'{stage}/b_acc'] = b_acc
+        metrics[f'{stage}/acc'] = acc
         self.log_dict(metrics)
 
     def training_epoch_end(self, outputs):
@@ -402,124 +320,3 @@ class Experiment(pl.LightningModule):
 
     def test_epoch_end(self, outputs):
         self.common_epoch_end(outputs, 'test')
-
-    def predict_step(self, batch):  # need to work on it
-        x = self._prepare_batch(batch)
-        return self(x)
-
-
-class Experiment2(Experiment):
-    def __init__(
-        self,
-        model,
-        num_child_class,
-        num_parent_class,
-        exp_config,
-        train_dl,
-        is_inference=False,
-    ):
-        super().__init__(
-            model,
-            num_child_class,
-            num_parent_class,
-            exp_config,
-            train_dl,
-            is_inference=is_inference,
-        )
-        self.lambda_sparse = 1e-3  # for TabNet training
-
-    def training_step(self, batch, batch_idx):
-        child_y = batch.pop('child_labels')
-        parent_y = batch.pop('parent_labels')
-        x = batch
-        if self.use_implicit_parent_category:
-            child_logits, M_loss = self.model(x)
-            parent_logits = self.make_implicit_parent_category_predictions(
-                child_logits
-            )
-        else:
-            child_logits, parent_logits = self.model(x)
-        child_loss = self.loss(child_logits, child_y)
-        parent_loss = self.loss(parent_logits, parent_y)
-        _, child_y_preds = torch.max(child_logits, 1)
-        _, parent_y_preds = torch.max(parent_logits, 1)
-        loss = (
-            child_loss + parent_loss
-            if self.use_child_parent_loss
-            else child_loss
-        )
-        loss -= self.lambda_sparse * M_loss
-        _metrics = {
-            'loss': loss,
-            'train_child_loss_step': child_loss.item(),
-            'train_parent_loss_step': parent_loss.item(),
-            'train_child_y_gts': child_y.cpu().detach().numpy(),
-            'train_parent_y_gts': parent_y.cpu().detach().numpy(),
-            'train_child_y_preds': child_y_preds.cpu().detach().numpy(),
-            'train_parent_y_preds': parent_y_preds.cpu().detach().numpy(),
-        }
-        return _metrics
-
-    def validation_step(self, val_batch, batch_idx):
-        child_y = val_batch.pop('child_labels')
-        parent_y = val_batch.pop('parent_labels')
-        x = val_batch
-        if self.use_implicit_parent_category:
-            child_logits, M_loss = self.model(x)
-            parent_logits = self.make_implicit_parent_category_predictions(
-                child_logits
-            )
-        else:
-            child_logits, parent_logits = self.model(x)
-        child_loss = self.loss(child_logits, child_y)
-        parent_loss = self.loss(parent_logits, parent_y)
-        _, child_y_preds = torch.max(child_logits, 1)
-        _, parent_y_preds = torch.max(parent_logits, 1)
-        loss = (
-            child_loss + parent_loss
-            if self.use_child_parent_loss
-            else child_loss
-        )
-        loss -= self.lambda_sparse * M_loss
-        _metrics = {
-            'loss': loss,
-            'val_child_loss_step': child_loss.item(),
-            'val_parent_loss_step': parent_loss.item(),
-            'val_child_y_gts': child_y.cpu().detach().numpy(),
-            'val_parent_y_gts': parent_y.cpu().detach().numpy(),
-            'val_child_y_preds': child_y_preds.cpu().detach().numpy(),
-            'val_parent_y_preds': parent_y_preds.cpu().detach().numpy(),
-        }
-        return _metrics
-
-    def test_step(self, test_batch, batch_idx):
-        child_y = test_batch.pop('child_labels')
-        parent_y = test_batch.pop('parent_labels')
-        x = test_batch
-        if self.use_implicit_parent_category:
-            child_logits, M_loss = self.model(x)
-            parent_logits = self.make_implicit_parent_category_predictions(
-                child_logits
-            )
-        else:
-            child_logits, parent_logits = self.model(x)
-        child_loss = self.loss(child_logits, child_y)
-        parent_loss = self.loss(parent_logits, parent_y)
-        _, child_y_preds = torch.max(child_logits, 1)
-        _, parent_y_preds = torch.max(parent_logits, 1)
-        loss = (
-            child_loss + parent_loss
-            if self.use_child_parent_loss
-            else child_loss
-        )
-        loss -= self.lambda_sparse * M_loss
-        _metrics = {
-            'loss': loss,
-            'test_child_loss_step': child_loss.item(),
-            'test_parent_loss_step': parent_loss.item(),
-            'test_child_y_gts': child_y.cpu().detach().numpy(),
-            'test_parent_y_gts': parent_y.cpu().detach().numpy(),
-            'test_child_y_preds': child_y_preds.cpu().detach().numpy(),
-            'test_parent_y_preds': parent_y_preds.cpu().detach().numpy(),
-        }
-        return _metrics

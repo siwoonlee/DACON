@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-# from pytorch_tabnet.tab_network import AttentiveTransformer, TabNet
-# from tab_transformer_pytorch.tab_transformer_pytorch import TabTransformer
 from tsai.models.all import (
     LSTM_FCN,
     TST,
@@ -16,89 +14,81 @@ from tsai.models.all import (
     mWDNPlus,
 )
 
-from laboratory.legacy.bank_account_category_classification.models.textcnn import (
-    TextCNN,
-)
-from laboratory.transaction_classification.utils.vectorizer import OOV_INDEX
-from laboratory.utils import get_config
 
-
-class ConcatEnsembleMultiInputModel(nn.Module):
+class CustomModel(nn.Module):
     def __init__(
         self,
-        model1,
-        model2,
-        c_out1,
-        c_out2,
+        model,
+        mid_c_out,
         n_out,
         device,
-        method='simple',
+        is_pretraining=False,
         is_inference=False,
     ):
         super().__init__()
         self.is_inference = is_inference
-        self.model1 = model1.to(device=device, dtype=torch.float32)
-        self.model2 = model2.to(device=device, dtype=torch.float32)
-        self.method = method
-        concat_len = c_out1 + c_out2
-        if method == 'simple':
-            self.ensemble_model = nn.Sequential(
-                nn.BatchNorm1d(concat_len),
+        self.is_pretraining = is_pretraining
+        self.model = model.to(device=device, dtype=torch.float32)
+        if not is_pretraining:
+            self.head_유형 = nn.Sequential(
+                nn.BatchNorm1d(mid_c_out),
                 nn.ReLU(),
-                # nn.Dropout(0.5),
-                nn.Linear(concat_len, concat_len),
-                nn.BatchNorm1d(concat_len),
+                nn.Linear(mid_c_out, mid_c_out),
+                nn.BatchNorm1d(mid_c_out),
                 nn.ReLU(),
-                # nn.Dropout(0.5),
-                nn.Linear(concat_len, concat_len),
-                nn.BatchNorm1d(concat_len),
-                nn.ReLU(),
-                nn.Linear(concat_len, n_out),
+                nn.Linear(mid_c_out, 4),
             )
-        elif method == 'tabnet':
-            self.ensemble_model = TabNet(
-                input_dim=concat_len, output_dim=n_out
-            ).to(device=device, dtype=torch.float32)
-        else:
-            raise NotImplementedError
+            self.head_극성 = nn.Sequential(
+                nn.BatchNorm1d(mid_c_out),
+                nn.ReLU(),
+                nn.Linear(mid_c_out, mid_c_out),
+                nn.BatchNorm1d(mid_c_out),
+                nn.ReLU(),
+                nn.Linear(mid_c_out, 3),
+            )
+            self.head_시제 = nn.Sequential(
+                nn.BatchNorm1d(mid_c_out),
+                nn.ReLU(),
+                nn.Linear(mid_c_out, mid_c_out),
+                nn.BatchNorm1d(mid_c_out),
+                nn.ReLU(),
+                nn.Linear(mid_c_out, 3),
+            )
+            self.head_확실성 = nn.Sequential(
+                nn.BatchNorm1d(mid_c_out),
+                nn.ReLU(),
+                nn.Linear(mid_c_out, mid_c_out),
+                nn.BatchNorm1d(mid_c_out),
+                nn.ReLU(),
+                nn.Linear(mid_c_out, 2),
+            )
+            self.head_final = nn.Sequential(
+                nn.BatchNorm1d(12),
+                nn.ReLU(),
+                nn.Linear(12, mid_c_out),
+                nn.BatchNorm1d(mid_c_out),
+                nn.ReLU(),
+                nn.Linear(mid_c_out, mid_c_out),
+                nn.BatchNorm1d(mid_c_out),
+                nn.ReLU(),
+                nn.Linear(mid_c_out, n_out),
+            )
 
-    def forward(self, x_dict):
-        res1 = self.model1(x_dict['title_vec_inputs'])
-        res2 = self.model2(x_dict['transaction_amount_inputs'])
-        if isinstance(res2, tuple):
-            res2, M_loss1 = res2[0], res2[1]
-        else:
-            M_loss1 = 0
-        res = [res1, res2]
-        res = torch.cat(res, dim=1)
-        res = self.ensemble_model(res)
-        if isinstance(res, tuple):
-            res, M_loss = res[0], res[1] + M_loss1
-        else:
-            M_loss = 0 - M_loss1
+    def forward(self, x):
+        mid_vec = self.model(x)
+        if self.is_pretraining:
+            return mid_vec
+        out_유형 = self.head_유형(mid_vec)
+        out_극성 = self.head_극성(mid_vec)
+        out_시제 = self.head_시제(mid_vec)
+        out_확실성 = self.head_확실성(mid_vec)
+
+        res = torch.cat([out_유형, out_극성, out_시제, out_확실성], dim=1)
+        res = self.head_final(res)
         if self.is_inference:
             return torch.argmax(res, axis=1)
         else:
-            return res, M_loss
-
-
-class SimpleTabularModel(nn.Module):
-    def __init__(self, n_in, c_out):
-        super().__init__()
-        self.model = nn.Sequential(
-            nn.Linear(n_in, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            # nn.Dropout(0.5),
-            nn.Linear(128, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Linear(128, c_out),
-        )
-        self.c_out = c_out
-
-    def forward(self, x):
-        return self.model(x)
+            return res, out_유형, out_극성, out_시제, out_확실성
 
 
 class SwapAxis(nn.Module):
@@ -109,41 +99,14 @@ class SwapAxis(nn.Module):
         return torch.swapaxes(x, 1, 2)
 
 
-def get_tabular_model(config_args, device):
-    if config_args.model_name == 'Simple':
-        model2 = SimpleTabularModel(
-            config_args.c_in, config_args.mid_c_out
-        ).to(device=device, dtype=torch.float32)
-    elif config_args.model_name == 'TabNet':
-        model2 = TabNet(config_args.c_in, config_args.mid_c_out).to(
-            device=device, dtype=torch.float32
-        )
-    else:
-        raise NotImplementedError
-    return model2
-
-
 def get_model(
     config_args,
-    multi_input=False,
-    multi_input_model=None,
     is_pretrained_model=False,
 ):
-    if config_args.model_name == 'TextCNN':
-        model_config = config_args.textcnn_config
-        model = TextCNN(
-            config=get_config(model_config.path_to_model_config),
-            n_vocabs=config_args.n_vocabs,
-            num_categories=config_args.c_out,
-            vectors=None,
-        )
-        return model
-    if multi_input and 'custom' in multi_input_model:
-        c_out = config_args.mid_c_out
-    elif is_pretrained_model:
+    if is_pretrained_model:
         c_out = config_args.seq_len
     else:
-        c_out = config_args.c_out
+        c_out = config_args.mid_c_out
     if config_args.model_name == 'Inception':
         model_config = config_args.inception_config
         model = InceptionTimePlus(
@@ -251,39 +214,27 @@ def load_model_from_config(config, is_inference=False):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = get_model(
         config.model_config,
-        multi_input=config.experiment_config.multi_input,
-        multi_input_model=config.experiment_config.multi_input_model,
         is_pretrained_model=config.experiment_config.is_pretraining,
     ).to(device=device, dtype=torch.float32)
-    if config.experiment_config.multi_input:
-        model2 = get_tabular_model(
-            config_args=config.tabular_model_config, device=device
-        )
-        if 'tsai' in config.experiment_config.multi_input_model:
-            model = MultiInputNet(model, model2)
-        elif 'custom' in config.experiment_config.multi_input_model:
-            device = torch.device(
-                "cuda:0" if torch.cuda.is_available() else "cpu"
-            )
-            model = ConcatEnsembleMultiInputModel(
-                model,
-                model2,
-                c_out1=config.model_config.mid_c_out,
-                c_out2=config.tabular_model_config.mid_c_out,
-                n_out=config.model_config.c_out,
-                device=device,
-                method=config.experiment_config.ensemble_method,
-                is_inference=is_inference,
-            ).to(device=device, dtype=torch.float32)
+    model = CustomModel(
+        model,
+        config.model_config.seq_len if config.experiment_config.is_pretraining else config.model_config.mid_c_out,
+        config.model_config.c_out,
+        device,
+        is_pretraining=config.experiment_config.is_pretraining,
+        is_inference=is_inference,
+    ).to(device=device, dtype=torch.float32)
     return model
 
 
 def transfer_weights(
     model, weights_path, exclude_head: bool = True, is_multi_input=False
 ):
-    """Utility function that allows to easily transfer weights between models.
+    """
+    Utility function that allows to easily transfer weights between models.
     Taken from the great self-supervised repository created by Kerem Turgutlu.
-    https://github.com/KeremTurgutlu/self_supervised/blob/d87ebd9b4961c7da0efd6073c42782bbc61aaa2e/self_supervised/utils.py"""
+    https://github.com/KeremTurgutlu/self_supervised/blob/d87ebd9b4961c7da0efd6073c42782bbc61aaa2e/self_supervised/utils.py
+    """
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if is_multi_input:
         state_dict = model.model1.state_dict()
