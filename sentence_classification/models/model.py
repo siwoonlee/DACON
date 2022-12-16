@@ -228,7 +228,7 @@ def load_model_from_config(config, is_inference=False):
 
 
 def transfer_weights(
-    model, weights_path, exclude_head: bool = True, is_multi_input=False
+    model, weights_path, exclude_head: bool = True,
 ):
     """
     Utility function that allows to easily transfer weights between models.
@@ -236,10 +236,7 @@ def transfer_weights(
     https://github.com/KeremTurgutlu/self_supervised/blob/d87ebd9b4961c7da0efd6073c42782bbc61aaa2e/self_supervised/utils.py
     """
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    if is_multi_input:
-        state_dict = model.model1.state_dict()
-    else:
-        state_dict = model.state_dict()
+    state_dict = model.state_dict()
     new_state_dict = torch.load(weights_path, map_location=device)[
         'state_dict'
     ]

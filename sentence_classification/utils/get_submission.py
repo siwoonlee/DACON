@@ -1,12 +1,13 @@
 import os
 import importlib.util
 from pathlib import Path
+import torch
 import pandas as pd
 
 from sentence_classification.experiment import Experiment
 from sentence_classification.models.model import load_model_from_config
 from sentence_classification.constants import num_to_full_name_label_map
-
+from sentence_classification.utils.vectorizer import get_padded_character_vector
 
 def get_config_args(path_to_config):
     spec = importlib.util.spec_from_file_location("Config", os.path.join(path_to_config, "config.py"))
@@ -35,6 +36,7 @@ def get_inference_samples(
     test_data_df,
     batch_size=4,
     max_char_length=300,
+    device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
 ):
     for i in range(0, len(test_data_df), batch_size):
         sample_list = []
@@ -44,9 +46,8 @@ def get_inference_samples(
                 문장,
                 max_char_length,
             )
-            문장_vec_inputs = torch.tensor(문장_vec, dtype=torch.int64)
-            sample_list.append(문장_vec_inputs)
-        yield sample_list
+            sample_list.append(문장_vec)
+        yield torch.tensor(sample_list, dtype=torch.int64).to(device=device)
 
 
 def get_inference_result(
@@ -56,20 +57,18 @@ def get_inference_result(
     max_char_length=300,
 ):
     overall_y_preds = []
-    for sample_list in get_inference_samples(
+    for batch in get_inference_samples(
         test_data_df,
         batch_size=4,
         max_char_length=300,
     ):
-        for batch in sample_list:
-            logits = pl_model.model(batch)
-            _, y_preds = torch.max(logits, 1)
-            overall_y_preds.extend(y_preds.cpu().detach().numpy().tolist())
+        y_preds = pl_model.model(batch)
+        overall_y_preds.extend(y_preds.cpu().detach().numpy().tolist())
     return overall_y_preds
 
 
 def main():
-    path_to_model_ckpt = "/Users/swlee/Downloads/models/20220915_050623/model_epoch=32_step=    267762.ckpt"
+    path_to_model_ckpt = "../experiment_result/model_weights/20221216_230705/model_epoch=07_step=      3304.ckpt"
     path_to_config = str(Path(path_to_model_ckpt).parent)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     config_args = get_config_args(path_to_config)

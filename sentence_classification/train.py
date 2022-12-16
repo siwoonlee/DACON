@@ -77,7 +77,6 @@ def main():
             model,
             config.experiment_config.pretrained_model_path,
             exclude_head=True,
-            is_multi_input=config.experiment_config.multi_input,
         )
         logger.info("weight transfer success!")
     logger.info("Model Loaded")

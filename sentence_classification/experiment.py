@@ -290,14 +290,14 @@ class Experiment(pl.LightningModule):
             for output in outputs:
                 loss_steps.append(output[f'{stage}_loss_step'])
             avg_loss = np.mean(loss_steps)
-            metrics = dict({f'{stage}/loss': avg_loss})
-            self.log_dict(metrics, rank_zero_only=True)
+            _metrics = dict({f'{stage}/loss': avg_loss})
+            self.log_dict(_metrics, rank_zero_only=True)
             return
         total_loss_steps = []
         final_labels = []
         total_y_preds = []
         for output in outputs:
-            total_loss_steps.append(output[f'{stage}total_loss_steps'])
+            total_loss_steps.append(output[f'{stage}_total_loss_step'])
             final_labels.append(output[f'{stage}_final_labels'])
             total_y_preds.append(output[f'{stage}_total_y_preds'])
         total_avg_loss = np.mean(total_loss_steps)
@@ -306,11 +306,12 @@ class Experiment(pl.LightningModule):
         f1 = metrics.f1_score(final_labels, total_y_preds, average='weighted')
         b_acc = metrics.balanced_accuracy_score(final_labels, total_y_preds)
         acc = metrics.accuracy_score(final_labels, total_y_preds)
-        metrics[f'{stage}/loss'] = total_avg_loss
-        metrics[f'{stage}/weighted_f1_score'] = f1
-        metrics[f'{stage}/b_acc'] = b_acc
-        metrics[f'{stage}/acc'] = acc
-        self.log_dict(metrics)
+        _metrics = dict()
+        _metrics[f'{stage}/loss'] = total_avg_loss
+        _metrics[f'{stage}/weighted_f1_score'] = f1
+        _metrics[f'{stage}/balanced_accuracy'] = b_acc
+        _metrics[f'{stage}/accuracy'] = acc
+        self.log_dict(_metrics)
 
     def training_epoch_end(self, outputs):
         self.common_epoch_end(outputs, 'train')

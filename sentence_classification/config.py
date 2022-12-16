@@ -106,7 +106,7 @@ class TrainerConfig:
 class ExperimentConfig:
     path_to_result: str = path_to_result
     path_to_logs: str = os.path.join(path_to_result, 'logs')
-    experiment_name = 'tst_pretraining'
+    experiment_name = 'tst_trial1'
     max_epochs: int = 125
     batch_size: int = 32
     lr: float = 1e-4
@@ -123,9 +123,9 @@ class ExperimentConfig:
     focal_alpha: List = None
     early_stop_patience: int = 50
     dataset_dir: str = './data'
-    is_pretraining: bool = True
-    load_pretrained_model: bool = False
-    pretrained_model_path: str = ""
+    is_pretraining: bool = False
+    load_pretrained_model: bool = True
+    pretrained_model_path: str = "./experiment_result/model_weights/20221216_221513\model_epoch=15_step=      6608.ckpt"
     apply_data_augmentation: bool = True
     num_workers: int = 0
 
